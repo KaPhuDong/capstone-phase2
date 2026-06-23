@@ -57,19 +57,20 @@ Danh sách **signals (tín hiệu đo lường)** mà CDO có trách nhiệm thu
 
 ### 5 signals trong contract TF3
 
-| Signal | Loại | Tần suất | CDO làm gì |
+| Signal | Loại | Tần suất | Nguồn thật (EKS infra) |
 |---|---|---|---|
-| `istio_request_error_rate` | Gauge | 5 giây | **Tính toán** từ 2 counters: `Δerror / Δrequest` |
-| `istio_request_latency_p95` | Gauge | 5 giây | Đọc thẳng từ `metrics.csv` |
-| `container_memory_working_set_bytes` | Gauge | 10 giây | Đọc thẳng từ `metrics.csv` |
-| `app_log_error_event` | Event | Real-time | Parse `logs.csv`, lọc ERROR + stack trace |
-| `trace_span_error_event` | Event | Real-time | Parse `traces.csv`, lọc `statusCode != 0.0` |
+| `istio_request_error_rate` | Gauge | 5 giây | Prometheus scrape Istio sidecars — tính `rate(errors)/rate(total)` |
+| `istio_request_latency_p95` | Gauge | 5 giây | Prometheus `histogram_quantile(0.95, istio_request_duration_milliseconds)` |
+| `container_memory_working_set_bytes` | Gauge | 10 giây | Container Insights hoặc Prometheus cAdvisor |
+| `app_log_error_event` | Event | Real-time | CloudWatch Logs — Fluent Bit collect pod logs, filter ERROR/stack trace |
+| `trace_span_error_event` | Event | Real-time | OTel Collector — filter span `status.code = ERROR` → X-Ray/Jaeger |
 
 ### Keywords quan trọng
-- **`tenant_id`** — bắt buộc trong mọi payload, CDO tự inject khi dùng offline dataset.
+- **`tenant_id`** — bắt buộc trong mọi payload; CDO map từ Kubernetes namespace (`tenant-a` → `tenant_id: "tenant-a"`).
 - **RFC3339 UTC** — định dạng timestamp bắt buộc, độ chính xác millisecond.
-- **PII anonymization** — CDO phải lọc dữ liệu nhạy cảm trước khi gửi log sang AI.
-- **Derived metric** — Signal 1 không đọc thẳng mà phải tính, đây là điểm phức tạp nhất.
+- **PII anonymization** — CDO phải lọc dữ liệu nhạy cảm khỏi log message trước khi gửi sang AI.
+- **Derived metric** — Signal 1 không đọc thẳng mà phải tính `rate()` từ Prometheus counter, đây là điểm phức tạp nhất.
+- **Istio dependency** — Signals 1 & 2 phụ thuộc Istio sidecar được inject vào pods; cần confirm Istio enable trên EKS.
 - **Dead-letter queue** — AI sẽ reject payload sai schema, CDO cần xử lý DLQ.
 
 ---
@@ -217,8 +218,11 @@ Deployment Contract
 
 ## Checklist CDO cần implement từ 3 contracts
 
-- [ ] **Telemetry:** Pipeline đọc RE2/RE3 dataset → chuẩn hóa → inject `tenant_id` → push SQS
-- [ ] **Telemetry:** Xử lý delta calculation cho `istio_request_error_rate`
+- [ ] **Telemetry:** Deploy Prometheus + Istio trên EKS sandbox, scrape sidecars của Online Boutique pods
+- [ ] **Telemetry:** Tính `rate()` cho `istio_request_error_rate` và `histogram_quantile` cho latency p95
+- [ ] **Telemetry:** Setup Fluent Bit DaemonSet → CloudWatch Logs, filter ERROR events
+- [ ] **Telemetry:** Deploy OTel Collector, filter error spans → emit `trace_span_error_event`
+- [ ] **Telemetry:** Map Kubernetes namespace → `tenant_id` trong mọi payload
 - [ ] **Telemetry:** PII filter trước khi gửi log events
 - [ ] **API:** Implement gọi `/v1/detect` với đúng headers + schema
 - [ ] **API:** Implement gọi `/v1/verify` sau khi execute action
